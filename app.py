@@ -109,6 +109,140 @@ def predict_risk(df):
     
     return predicted_labels, ensemble_probs, X_scaled, X
 
+def derive_model_features(df: pd.DataFrame) -> pd.DataFrame:
+    """
+    Derives the 12 model feature columns from raw CSV columns when they are missing or all-zero.
+    Supports common column naming patterns found in generic procurement datasets.
+    """
+    df = df.copy()
+
+    # ── party_count ──────────────────────────────────────────────────────────
+    if 'party_count' not in df.columns or df['party_count'].fillna(0).eq(0).all():
+        for col in ['bidder_count', 'supplier_count', 'num_bidders', 'tenderers_count']:
+            if col in df.columns:
+                df['party_count'] = pd.to_numeric(df[col], errors='coerce').fillna(1)
+                break
+        else:
+            df['party_count'] = 1.0
+
+    # ── cpv_count ─────────────────────────────────────────────────────────────
+    if 'cpv_count' not in df.columns or df['cpv_count'].fillna(0).eq(0).all():
+        for col in ['num_categories', 'category_count']:
+            if col in df.columns:
+                df['cpv_count'] = pd.to_numeric(df[col], errors='coerce').fillna(1)
+                break
+        else:
+            df['cpv_count'] = 1.0
+
+    # ── has_participation_fee ────────────────────────────────────────────────
+    if 'has_participation_fee' not in df.columns or df['has_participation_fee'].fillna(0).eq(0).all():
+        for col in ['participation_fee', 'entry_fee', 'bid_bond', 'participation_fee_amount']:
+            if col in df.columns:
+                df['has_participation_fee'] = (pd.to_numeric(df[col], errors='coerce').fillna(0) > 0).astype(float)
+                break
+        else:
+            df['has_participation_fee'] = 0.0
+
+    # ── tender_value_amount_num ──────────────────────────────────────────────
+    if 'tender_value_amount_num' not in df.columns or df['tender_value_amount_num'].fillna(0).eq(0).all():
+        for col in ['tender_value', 'contract_value', 'amount', 'estimated_value', 'value']:
+            if col in df.columns:
+                df['tender_value_amount_num'] = pd.to_numeric(df[col], errors='coerce').fillna(0)
+                break
+        else:
+            df['tender_value_amount_num'] = 0.0
+
+    # ── tender_value_log_zscore ──────────────────────────────────────────────
+    if 'tender_value_log_zscore' not in df.columns or df['tender_value_log_zscore'].fillna(0).eq(0).all():
+        vals = pd.to_numeric(df['tender_value_amount_num'], errors='coerce').fillna(0)
+        log_vals = np.log1p(vals.clip(lower=0))
+        mean_log = log_vals.mean()
+        std_log = log_vals.std()
+        if std_log > 0:
+            df['tender_value_log_zscore'] = (log_vals - mean_log) / std_log
+        else:
+            df['tender_value_log_zscore'] = 0.0
+
+    # ── flag_high_value_outlier ──────────────────────────────────────────────
+    if 'flag_high_value_outlier' not in df.columns or df['flag_high_value_outlier'].fillna(0).eq(0).all():
+        df['flag_high_value_outlier'] = (df['tender_value_log_zscore'] > 2.0).astype(float)
+
+    # ── flag_short_description ───────────────────────────────────────────────
+    if 'flag_short_description' not in df.columns or df['flag_short_description'].fillna(0).eq(0).all():
+        for col in ['tender_description', 'description', 'scope']:
+            if col in df.columns:
+                df['flag_short_description'] = (
+                    df[col].fillna('').astype(str).str.split().apply(len) < 5
+                ).astype(float)
+                break
+        else:
+            df['flag_short_description'] = 0.0
+
+    # ── text_word_count ──────────────────────────────────────────────────────
+    if 'text_word_count' not in df.columns or df['text_word_count'].fillna(0).eq(0).all():
+        for col in ['tender_description', 'description', 'scope']:
+            if col in df.columns:
+                df['text_word_count'] = df[col].fillna('').astype(str).str.split().apply(len).astype(float)
+                break
+        else:
+            df['text_word_count'] = 0.0
+
+    # ── text_risk_keyword_score ──────────────────────────────────────────────
+    RISK_KEYWORDS = {
+        'skualifikim': 2.5, 'perjashtim': 2.5, 'kufizim': 2.0,
+        'favorizim': 3.0, 'monopol': 3.0, 'brend': 2.0, 'eksklusiv': 2.5,
+        'restrictive': 2.0, 'exclusive': 2.5, 'brand': 1.5, 'sole': 2.0,
+        'only': 1.0, 'proprietary': 2.5, 'single': 1.5, 'limited': 1.5,
+        'disqualif': 2.0, 'corrupt': 3.0, 'fraud': 3.0
+    }
+    if 'text_risk_keyword_score' not in df.columns or df['text_risk_keyword_score'].fillna(0).eq(0).all():
+        for col in ['tender_description', 'description', 'tender_title', 'title']:
+            if col in df.columns:
+                def score_text(text):
+                    words = str(text).lower().split()
+                    return sum(RISK_KEYWORDS.get(w, 0) for w in words)
+                df['text_risk_keyword_score'] = df[col].fillna('').apply(score_text)
+                break
+        else:
+            df['text_risk_keyword_score'] = 0.0
+
+    # ── flag_brand_specs ─────────────────────────────────────────────────────
+    BRAND_PATTERN = r'\b(?:cisco|dell|hp|lenovo|intel|microsoft|oracle|apple|samsung|toyota|mercedes|bmw|bosch|siemens)\b'
+    if 'flag_brand_specs' not in df.columns or df['flag_brand_specs'].fillna(0).eq(0).all():
+        for col in ['tender_description', 'description', 'tender_title', 'title']:
+            if col in df.columns:
+                import re
+                df['flag_brand_specs'] = df[col].fillna('').astype(str).str.contains(
+                    BRAND_PATTERN, case=False, regex=True
+                ).astype(float)
+                break
+        else:
+            df['flag_brand_specs'] = 0.0
+
+    # ── complaint_filed_flag ─────────────────────────────────────────────────
+    if 'complaint_filed_flag' not in df.columns or df['complaint_filed_flag'].fillna(0).eq(0).all():
+        for col in ['complaint_count', 'complaints', 'num_complaints', 'complaints_id']:
+            if col in df.columns:
+                df['complaint_filed_flag'] = (
+                    pd.to_numeric(df[col], errors='coerce').fillna(0) > 0
+                ).astype(float)
+                break
+        else:
+            df['complaint_filed_flag'] = 0.0
+
+    # ── complaint_severity_score ─────────────────────────────────────────────
+    if 'complaint_severity_score' not in df.columns or df['complaint_severity_score'].fillna(0).eq(0).all():
+        # Derive from complaint count scaled 0-3
+        for col in ['complaint_count', 'complaints', 'num_complaints']:
+            if col in df.columns:
+                df['complaint_severity_score'] = pd.to_numeric(df[col], errors='coerce').fillna(0).clip(0, 3).astype(float)
+                break
+        else:
+            df['complaint_severity_score'] = 0.0
+
+    return df
+
+
 def compute_sbert_similarity(texts, risk_keywords=["korrupsion", "favorizim", "kufizim", "skualifikim"]):
     """Computes semantic similarity to suspicious contract clauses"""
     embeddings = sbert.encode(texts, convert_to_tensor=True)
@@ -182,9 +316,21 @@ else:
     with st.spinner("Analyzing contracts and calculating transparency indicators..."):
         df = pd.read_csv(uploaded_file)
         
+        # ── Auto-derive missing model features from raw columns ──────────────
+        # Check if the 12 model features are missing or all-zero before derivation
+        features_missing = all(
+            col not in df.columns or df[col].fillna(0).eq(0).all()
+            for col in FEATURE_COLS
+        )
+        df = derive_model_features(df)
+        
         # SBERT semantic risk if text available
-        if 'text_description' in df.columns or 'title' in df.columns:
-            text_col = 'text_description' if 'text_description' in df.columns else 'title'
+        text_col = None
+        for candidate in ['text_description', 'tender_description', 'description', 'title', 'tender_title']:
+            if candidate in df.columns:
+                text_col = candidate
+                break
+        if text_col:
             df['suspicious_language_score'] = compute_sbert_similarity(df[text_col].fillna("").tolist())
         else:
             df['suspicious_language_score'] = 0.0
@@ -198,6 +344,16 @@ else:
         shap_values_matrix = compute_shap_explanations(X_scaled)
         
     st.success("✅ Analysis Complete!")
+    
+    # Warn if features were derived from raw columns (generic CSV)
+    if features_missing:
+        st.warning("""
+        ⚠️ **Note:** Your CSV did not contain the standard model feature columns, so the system 
+        automatically derived them from available columns (bidder counts, contract values, complaint 
+        counts, description text, etc.). For the most accurate predictions, use a CSV with these 
+        columns: `party_count`, `complaint_filed_flag`, `flag_brand_specs`, `tender_value_amount_num`, 
+        `tender_value_log_zscore`, `has_participation_fee`, `text_risk_keyword_score`, etc.
+        """)
     
     # Key Summary Cards
     st.header("📊 Overview Summary")
