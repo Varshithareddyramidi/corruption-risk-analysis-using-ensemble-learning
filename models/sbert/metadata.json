@@ -1,0 +1,65 @@
+{
+  "sbert_model": "paraphrase-multilingual-MiniLM-L12-v2",
+  "target_column": "risk_level",
+  "training_rows": 1002,
+  "class_counts": {
+    "HIGH": 649,
+    "LOW": 200,
+    "MEDIUM": 153
+  },
+  "classes": [
+    "HIGH",
+    "LOW",
+    "MEDIUM"
+  ],
+  "label_note": "These are the processed dataset's rule-generated risk categories, not confirmed corruption outcomes.",
+  "method": "Frozen Sentence-BERT embeddings with a multinomial logistic-regression classifier.",
+  "class_weight": null,
+  "validation_selection": {
+    "macro_f1": 0.8559808612440193,
+    "balanced_accuracy": 0.8234615384615385,
+    "candidate_scores": {
+      "unweighted_macro_f1": 0.8559808612440193,
+      "balanced_macro_f1": 0.818958818958819
+    }
+  },
+  "held_out_test_metrics": {
+    "rows": 201,
+    "accuracy": 0.9203980099502488,
+    "balanced_accuracy": 0.8361455748552523,
+    "macro_f1": 0.8700370747445,
+    "classification_report": {
+      "HIGH": {
+        "precision": 0.8958333333333334,
+        "recall": 0.9923076923076923,
+        "f1-score": 0.9416058394160584,
+        "support": 130.0
+      },
+      "LOW": {
+        "precision": 0.975609756097561,
+        "recall": 1.0,
+        "f1-score": 0.9876543209876543,
+        "support": 40.0
+      },
+      "MEDIUM": {
+        "precision": 1.0,
+        "recall": 0.5161290322580645,
+        "f1-score": 0.6808510638297872,
+        "support": 31.0
+      },
+      "accuracy": 0.9203980099502488,
+      "macro avg": {
+        "precision": 0.9571476964769648,
+        "recall": 0.8361455748552523,
+        "f1-score": 0.8700370747445,
+        "support": 201.0
+      },
+      "weighted avg": {
+        "precision": 0.9277747441653522,
+        "recall": 0.9203980099502488,
+        "f1-score": 0.9105538056831698,
+        "support": 201.0
+      }
+    }
+  }
+}
