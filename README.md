@@ -27,13 +27,15 @@ counts, values, complaints, restrictive specifications, procedure type, bid
 period, repeat winners, amendments, value increases, and award justifications.
 The app distinguishes fields mapped into trained features from additional
 review signals that the models were not trained on. SHAP explanations are
-shown in plain language: the description-only view names words that moved the
-Sentence-BERT score up or down. For a selected structured row, the app gives
-separate explanations for LightGBM and FT-Transformer; if a description is
-available, it also shows Sentence-BERT word-level reasons. The displayed rule
-category is explained separately with its contributing signals and points.
-Other dashboard charts summarize risk counts, score distributions, model
-versus rule categories, and additional review signals.
+shown in plain language: Sentence-BERT groups influential word pieces into
+short phrases and estimates their class-score effects. For a selected
+structured row, LightGBM and FT-Transformer are explained separately; the
+FT-Transformer attribution uses repeated feature-order permutations and a
+fixed training-mean baseline. When a description is present, its Sentence-BERT
+phrase explanation is shown too. The displayed rule category has a separate
+list of its contributing signals and points. Other dashboard charts summarize
+risk counts, score distributions, model versus rule categories, and additional
+review signals.
 
 ## Model evaluation and retraining
 

@@ -10,6 +10,7 @@ from sentence_transformers import SentenceTransformer
 import os
 import sys
 import json
+import re
 
 # Ensure src module is in path
 sys.path.insert(0, os.path.abspath(os.path.dirname(__file__)))
@@ -304,28 +305,58 @@ def get_text_shap_explainer():
     return shap.Explainer(predict_text_probabilities, masker, algorithm='partition')
 
 def show_text_shap(description, class_index):
-    explanation = get_text_shap_explainer()([description], max_evals=100)
+    explanation = get_text_shap_explainer()([description], max_evals=300)
     values = np.asarray(explanation.values)
     if values.ndim == 3:
         values = values[0, :, class_index]
     else:
         values = values[0]
     tokens = list(explanation.data[0])
-    text_shap = pd.DataFrame({'Term': tokens, 'SHAP contribution': values})
-    text_shap = text_shap[text_shap['Term'].astype(str).str.strip() != '']
-    text_shap = text_shap.reindex(text_shap['SHAP contribution'].abs().sort_values(ascending=False).index)
-    raise_terms = text_shap[text_shap['SHAP contribution'] > 0].head(5)
-    lower_terms = text_shap[text_shap['SHAP contribution'] < 0].head(5)
+    # Merge adjacent tokenizer fragments with the same SHAP direction into short
+    # phrases. This avoids presenting isolated word pieces as if they were reasons.
+    phrases = []
+    words, phrase_value, phrase_sign = [], 0.0, 0
+    def flush_phrase():
+        nonlocal words, phrase_value, phrase_sign
+        phrase = ' '.join(words).strip()
+        if phrase and phrase_sign:
+            phrases.append((phrase, phrase_value))
+        words, phrase_value, phrase_sign = [], 0.0, 0
+    for raw_token, raw_value in zip(tokens, values):
+        token = str(raw_token).replace('##', '').replace('▁', ' ').replace('Ġ', ' ').strip()
+        contribution = float(raw_value)
+        sign = 1 if contribution > 0 else (-1 if contribution < 0 else 0)
+        if not token or not sign:
+            flush_phrase()
+            continue
+        # Ignore punctuation-only tokens, using punctuation as a phrase boundary.
+        if re.fullmatch(r'[^\w]+', token, flags=re.UNICODE):
+            flush_phrase()
+            continue
+        for word in token.split():
+            if phrase_sign != sign or len(words) >= 4:
+                flush_phrase()
+            phrase_sign = sign
+            words.append(word)
+            phrase_value += contribution / max(1, len(token.split()))
+            if re.search(r'[.!?;:]$', word):
+                flush_phrase()
+    flush_phrase()
+    text_shap = pd.DataFrame(phrases, columns=['Phrase', 'SHAP contribution'])
+    if not text_shap.empty:
+        text_shap = text_shap.groupby('Phrase', as_index=False)['SHAP contribution'].sum()
+    raise_terms = text_shap[text_shap['SHAP contribution'] > 0].nlargest(3, 'SHAP contribution')
+    lower_terms = text_shap[text_shap['SHAP contribution'] < 0].nsmallest(3, 'SHAP contribution')
     class_name = str(label_enc.classes_[class_index]).lower()
     if len(raise_terms):
-        reasons = ', '.join(f'“{str(row.Term).strip()}”' for row in raise_terms.itertuples())
-        st.write(f"**Why the description leans {class_name}:** The terms {reasons} pushed the model’s {class_name} score upward.")
+        for _, row in raise_terms.iterrows():
+            st.write(f"- The phrase **“{row['Phrase']}”** raised Sentence-BERT’s {class_name} score by about {row['SHAP contribution'] * 100:.1f} percentage points.")
     if len(lower_terms):
-        reasons = ', '.join(f'“{str(row.Term).strip()}”' for row in lower_terms.itertuples())
-        st.write(f"**What pulled the score down:** The terms {reasons} pushed the {class_name} score downward.")
+        for _, row in lower_terms.iterrows():
+            st.write(f"- The phrase **“{row['Phrase']}”** lowered Sentence-BERT’s {class_name} score by about {abs(row['SHAP contribution']) * 100:.1f} percentage points.")
     if not len(raise_terms) and not len(lower_terms):
-        st.write("SHAP did not find a clear word-level contribution for this description.")
-    st.caption("These are word-level influences on Sentence-BERT’s selected class score, not proof that an incident occurred.")
+        st.write("SHAP did not find a clear phrase-level influence for this description.")
+    st.caption("Phrase effects are approximate changes in this class score, relative to SHAP’s masked-text baseline. They explain the model, not a verified outcome.")
 
 def feature_reason(feature, value):
     """Turn a tabular feature and its value into a readable procurement signal."""
@@ -349,23 +380,26 @@ def feature_reason(feature, value):
     }
     return reasons.get(feature, f'{FEATURE_NAMES.get(feature, feature)} had value {number:g}.')
 
-def explain_shap_in_plain_language(shap_row, features_row, class_name, model_name):
+def explain_shap_in_plain_language(shap_row, features_row, class_name, model_name, probability_scale=False):
     """Render row-level SHAP contributions as simple upward/downward reasons."""
     entries = []
     for feature, contribution, raw_value in zip(FEATURE_COLS, shap_row, features_row[FEATURE_COLS]):
         entries.append((feature, float(contribution), feature_reason(feature, raw_value)))
     entries.sort(key=lambda item: abs(item[1]), reverse=True)
     # Use contribution direction, with each feature's value supplying the human-readable context.
-    raised = [(name, reason) for name, impact, reason in entries if impact > 0]
-    lowered = [(name, reason) for name, impact, reason in entries if impact < 0]
+    threshold = 0.002 if probability_scale else 0.0
+    raised = [(name, impact, reason) for name, impact, reason in entries if impact > threshold]
+    lowered = [(name, impact, reason) for name, impact, reason in entries if impact < -threshold]
     if raised:
         st.markdown(f"**Why {model_name} leaned {class_name}:**")
-        for name, reason in raised[:4]:
-            st.write(f"- {reason} This pushed {model_name}’s {class_name} score up.")
+        for name, impact, reason in raised[:4]:
+            size = f" (+{impact * 100:.1f} percentage points)" if probability_scale else ''
+            st.write(f"- {reason} This pushed {model_name}’s {class_name} score up{size}.")
     if lowered:
         st.markdown(f"**Factors that pulled {model_name} away from {class_name}:**")
-        for name, reason in lowered[:3]:
-            st.write(f"- {reason} This pulled {model_name}’s {class_name} score down.")
+        for name, impact, reason in lowered[:3]:
+            size = f" ({impact * 100:.1f} percentage points)" if probability_scale else ''
+            st.write(f"- {reason} This pulled {model_name}’s {class_name} score down{size}.")
     if not raised and not lowered:
         st.write("No clear feature-level reason was available for this row.")
 
@@ -377,7 +411,7 @@ def predict_ft_probabilities(scaled_values):
         return F.softmax(logits, dim=1).cpu().numpy()
 
 def get_ft_row_shap(scaled_values, row_index, class_index):
-    """Explain one FT-Transformer row with permutation SHAP around training means."""
+    """Explain FT probability with repeated permutation SHAP around training means."""
     # The scaler's zero point is the training-set mean, giving a stable baseline
     # that does not change when unrelated rows are added to the upload.
     baseline = np.zeros((1, len(FEATURE_COLS)), dtype=np.float32)
@@ -388,7 +422,7 @@ def get_ft_row_shap(scaled_values, row_index, class_index):
     )
     values = explainer(
         np.asarray(scaled_values[row_index:row_index + 1], dtype=np.float32),
-        max_evals=2 * len(FEATURE_COLS) + 1,
+        max_evals=2 * len(FEATURE_COLS) * 12 + 1,
     )
     return class_shap_values(values.values, class_index, 0)
 
@@ -650,8 +684,8 @@ if uploaded_file is not None:
         st.markdown("**FT-Transformer explanation**")
         try:
             ft_row_shap = get_ft_row_shap(X_scaled, selected_row, model_class_index)
-            explain_shap_in_plain_language(ft_row_shap, selected, model_class, 'FT-Transformer')
-            st.caption("FT-Transformer SHAP compares this row with the model’s average training-feature values.")
+            explain_shap_in_plain_language(ft_row_shap, selected, model_class, 'FT-Transformer', probability_scale=True)
+            st.caption("FT-Transformer attributions are probability-point changes relative to the average training-feature baseline, estimated over 12 feature-order permutations.")
         except Exception as exc:
             st.info(f"FT-Transformer explanation could not be generated for this row: {exc}")
         selected_description = get_descriptions(df)
