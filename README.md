@@ -28,11 +28,12 @@ period, repeat winners, amendments, value increases, and award justifications.
 The app distinguishes fields mapped into trained features from additional
 review signals that the models were not trained on. SHAP explanations are
 shown in plain language: the description-only view names words that moved the
-Sentence-BERT score up or down, while the structured view names procurement
-signals that moved LightGBM's class score. The displayed rule category is
-explained with a list of its contributing signals and points. Other dashboard
-charts summarize risk counts, score distributions, model versus rule
-categories, and additional review signals.
+Sentence-BERT score up or down. For a selected structured row, the app gives
+separate explanations for LightGBM and FT-Transformer; if a description is
+available, it also shows Sentence-BERT word-level reasons. The displayed rule
+category is explained separately with its contributing signals and points.
+Other dashboard charts summarize risk counts, score distributions, model
+versus rule categories, and additional review signals.
 
 ## Model evaluation and retraining
 

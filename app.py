@@ -349,7 +349,7 @@ def feature_reason(feature, value):
     }
     return reasons.get(feature, f'{FEATURE_NAMES.get(feature, feature)} had value {number:g}.')
 
-def explain_shap_in_plain_language(shap_row, features_row, class_name):
+def explain_shap_in_plain_language(shap_row, features_row, class_name, model_name):
     """Render row-level SHAP contributions as simple upward/downward reasons."""
     entries = []
     for feature, contribution, raw_value in zip(FEATURE_COLS, shap_row, features_row[FEATURE_COLS]):
@@ -359,15 +359,38 @@ def explain_shap_in_plain_language(shap_row, features_row, class_name):
     raised = [(name, reason) for name, impact, reason in entries if impact > 0]
     lowered = [(name, reason) for name, impact, reason in entries if impact < 0]
     if raised:
-        st.markdown(f"**Why LightGBM leaned {class_name}:**")
+        st.markdown(f"**Why {model_name} leaned {class_name}:**")
         for name, reason in raised[:4]:
-            st.write(f"- {reason} This pushed the model’s {class_name} score up.")
+            st.write(f"- {reason} This pushed {model_name}’s {class_name} score up.")
     if lowered:
-        st.markdown(f"**Factors that pulled LightGBM away from {class_name}:**")
+        st.markdown(f"**Factors that pulled {model_name} away from {class_name}:**")
         for name, reason in lowered[:3]:
-            st.write(f"- {reason} This pulled the model’s {class_name} score down.")
+            st.write(f"- {reason} This pulled {model_name}’s {class_name} score down.")
     if not raised and not lowered:
         st.write("No clear feature-level reason was available for this row.")
+
+def predict_ft_probabilities(scaled_values):
+    """Return FT-Transformer probabilities for scaled feature arrays (SHAP adapter)."""
+    values = np.asarray(scaled_values, dtype=np.float32)
+    with torch.no_grad():
+        logits = ft_model(torch.tensor(values, dtype=torch.float32))
+        return F.softmax(logits, dim=1).cpu().numpy()
+
+def get_ft_row_shap(scaled_values, row_index, class_index):
+    """Explain one FT-Transformer row with permutation SHAP around training means."""
+    # The scaler's zero point is the training-set mean, giving a stable baseline
+    # that does not change when unrelated rows are added to the upload.
+    baseline = np.zeros((1, len(FEATURE_COLS)), dtype=np.float32)
+    explainer = shap.Explainer(
+        predict_ft_probabilities,
+        shap.maskers.Independent(baseline),
+        algorithm='permutation',
+    )
+    values = explainer(
+        np.asarray(scaled_values[row_index:row_index + 1], dtype=np.float32),
+        max_evals=2 * len(FEATURE_COLS) + 1,
+    )
+    return class_shap_values(values.values, class_index, 0)
 
 def source_mapping_table(source_df):
     normalized = {''.join(ch.lower() for ch in str(c) if ch.isalnum()): str(c) for c in source_df.columns}
@@ -617,8 +640,29 @@ if uploaded_file is not None:
     if lgb_shap_values is not None and 'Model_Ensemble_Prediction' in df.columns:
         model_class = str(selected['Model_Ensemble_Prediction'])
         model_class_index = int(np.where(label_enc.classes_ == model_class)[0][0])
+        st.caption(
+            "The following explanations describe each model’s contribution to the ML ensemble class. "
+            "The displayed rule-based category and its point contributions are shown separately above."
+        )
         selected_shap = class_shap_values(lgb_shap_values, model_class_index, selected_row)
-        explain_shap_in_plain_language(selected_shap, selected, model_class)
+        st.markdown("**LightGBM explanation**")
+        explain_shap_in_plain_language(selected_shap, selected, model_class, 'LightGBM')
+        st.markdown("**FT-Transformer explanation**")
+        try:
+            ft_row_shap = get_ft_row_shap(X_scaled, selected_row, model_class_index)
+            explain_shap_in_plain_language(ft_row_shap, selected, model_class, 'FT-Transformer')
+            st.caption("FT-Transformer SHAP compares this row with the model’s average training-feature values.")
+        except Exception as exc:
+            st.info(f"FT-Transformer explanation could not be generated for this row: {exc}")
+        selected_description = get_descriptions(df)
+        if selected_description is not None and str(selected_description[selected_row]).strip():
+            st.markdown("**Sentence-BERT description explanation**")
+            try:
+                show_text_shap(str(selected_description[selected_row]), model_class_index)
+            except Exception as exc:
+                st.info(f"Sentence-BERT text explanation could not be generated for this row: {exc}")
+        else:
+            st.caption("Sentence-BERT is not part of this row’s prediction because no description was provided.")
     
     # Detailed Data Table
     st.header("High-Risk Contracts Identified")
